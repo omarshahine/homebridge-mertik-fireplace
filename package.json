@@ -1,7 +1,7 @@
 {
   "displayName": "Valor Fireplace",
   "name": "homebridge-valor-fireplace",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Controls Valor Fireplace WiFi controllers, connecting real fire with Homebridge.",
   "license": "MIT",
   "author": {
