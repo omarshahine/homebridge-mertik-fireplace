@@ -81,19 +81,23 @@ export class ServiceController implements IServiceController {
       ],
     });
 
-    // Configure HeatingThresholdTemperature with proper props
-    // Note: Set minValue to 0 to allow for "off" state where target temp can be 0
+    // Configure HeatingThresholdTemperature with proper props.
+    // minValue 0 keeps the "off" state addressable (target temp can be 0).
+    // maxValue 26.5°C (~79.7°F) is a hard safety cap — 36°C (~97°F) is
+    // unsafe for a fireplace thermostat and slipped through the slider
+    // before. If anyone needs higher they should use Manual flame-height.
     this.heatingThresholdTemperatureCharacteristic().setProps({
       minValue: 0.0,
-      maxValue: 36.0,
+      maxValue: 26.5,
       minStep: 0.5,
     });
 
-    // Configure CoolingThresholdTemperature - required for iOS to display detail view
-    // Even though we don't use cooling, iOS needs this characteristic defined
+    // Configure CoolingThresholdTemperature - required for iOS to display
+    // detail view. Even though we don't use cooling, iOS needs this
+    // characteristic defined. Cap matches heating for consistency.
     this.coolingThresholdTemperatureCharacteristic().setProps({
       minValue: 10.0,
-      maxValue: 35.0,
+      maxValue: 26.5,
       minStep: 0.5,
     });
 

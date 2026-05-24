@@ -50,7 +50,7 @@ export class IgnitionTracker {
   /** Wait this long for `guardFlameOn` or `igniting=0` after Ignite command. */
   static IGNITION_TIMEOUT_MS = 90 * 1000;
   /** Spacing between auto-retries to let the receiver / gas line settle. */
-  static RETRY_DELAY_MS = 3 * 60 * 1000;
+  static RETRY_DELAY_MS = 45 * 1000;
   /** Cap on history we keep persisted. */
   static MAX_HISTORY = 200;
 

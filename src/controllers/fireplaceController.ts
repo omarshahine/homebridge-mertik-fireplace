@@ -88,6 +88,14 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    * catch the `guardFlameOn` clear within ~2s of the actual event.
    */
   private static SHUTDOWN_POLL_INTERVAL_MS = 2_000;
+  /**
+   * Hard safety cap on the thermostat setpoint, in Celsius. Mirrors the
+   * HomeKit `setProps` cap in `serviceController` — duplicated here as a
+   * defense against any code path (cached HomeKit state, restored
+   * accessory state, future internal callers) that bypasses the slider's
+   * advertised maxValue. 26.5°C ≈ 79.7°F.
+   */
+  private static MAX_SAFE_TARGET_C = 26.5;
 
   constructor(
     public readonly log: Logger,
@@ -171,10 +179,10 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    * to `<storagePath>/valor-ignition-history.json` for postmortem use even
    * if the homebridge log rotates.
    */
-  private async igniteFireplace() {
+  private async igniteFireplace(): Promise<boolean> {
     if (this.igniting) {
       this.log.debug('Ignore already igniting!');
-      return;
+      return false;
     }
     if (this.ignitionTracker.hasRecentHardLockout()) {
       this.log.error(
@@ -182,7 +190,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
         'Manual intervention required (cycle gas at the wall, paperclip-reset the WiFi module, ' +
         'or retry ignition from the handheld). Restart homebridge after recovery to clear this state.',
       );
-      return;
+      return false;
     }
     this.ignitionAbortRequested = false;
     this.igniting = true;
@@ -191,7 +199,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       for (let attempt = 1; attempt <= max; attempt++) {
         if (this.ignitionAbortRequested) {
           this.log.info(`[ignite] Attempt sequence aborted by user request before attempt ${attempt} of ${max}`);
-          return;
+          return false;
         }
         this.log.info(`[ignite] Attempt ${attempt} of ${max}: sending Ignite command`);
         const record = this.ignitionTracker.recordAttemptStart(attempt, max, 'auto-retry');
@@ -207,7 +215,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
             `(attempt id=${record.id}, bits=0x${bits})`,
           );
           this.emit('lockout', false);
-          return;
+          return true;
         }
         if (outcome === 'soft-fail') {
           this.ignitionTracker.recordSoftFailure(elapsedMs, bits);
@@ -222,7 +230,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
             `${Math.round(elapsedMs / 1000)}s (bits=0x${bits}). Stopping retry sequence; manual reset required.`,
           );
           this.emit('lockout', true);
-          return;
+          return false;
         }
         if (attempt < max) {
           const delaySec = Math.round(IgnitionTracker.RETRY_DELAY_MS / 1000);
@@ -230,7 +238,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
           const aborted = await this.delayWithAbort(IgnitionTracker.RETRY_DELAY_MS);
           if (aborted) {
             this.log.info('[ignite] Retry wait interrupted by user request — aborting sequence');
-            return;
+            return false;
           }
         }
       }
@@ -239,6 +247,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
         'Likely needs manual intervention: check gas pressure, pilot orifice, thermopile, or spark electrode.',
       );
       this.emit('lockout', true);
+      return false;
     } finally {
       this.igniting = false;
     }
@@ -494,6 +503,16 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
   }
 
   public async setTemperature(temperature: number) {
+    // Defensive safety cap. The HomeKit slider is already constrained by
+    // `setProps` in serviceController, but cached/restored state and
+    // internal callers can still hand us higher values.
+    if (temperature > FireplaceController.MAX_SAFE_TARGET_C) {
+      this.log.warn(
+        `Target temperature ${temperature}°C exceeds safety cap of ` +
+        `${FireplaceController.MAX_SAFE_TARGET_C}°C — clamping.`,
+      );
+      temperature = FireplaceController.MAX_SAFE_TARGET_C;
+    }
     // Log in configured temperature unit
     const unit = this.platform?.temperatureUnit || 'C';
     const displayTemp = unit === 'F' ? Math.round(temperature * 9/5 + 32) : temperature;
@@ -531,10 +550,22 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     }
     if (OperationModeUtils.needsIgnite(mode) && currentMode === OperationMode.Off && !this.lastStatus?.guardFlameOn) {
       this.log.info('Ignite fireplace');
-      await this.igniteFireplace();
-      return false;
+      const igniteSucceeded = await this.igniteFireplace();
+      if (!igniteSucceeded) {
+        // igniteFireplace() already ran its own MAX_ATTEMPTS retry sequence
+        // and (on hard-fail) flipped the lockout circuit breaker. Returning
+        // true here keeps requestController from queueing a second-layer
+        // 90s retry storm on top of that.
+        return true;
+      }
+      // Ignition succeeded. The receiver lands in Manual by default —
+      // fall through so we still apply the user's requested mode (e.g.
+      // Temperature for HEAT) instead of leaving them stuck in Manual.
     }
-    if (currentMode === mode) {
+    // Re-read mode: lastStatus was updated by the polls inside the ignite
+    // wait loop, so currentMode (captured above) is stale post-ignite.
+    const liveMode = this.lastStatus?.mode || OperationMode.Off;
+    if (liveMode === mode) {
       this.log.debug('Ignore same mode!');
       return true;
     }
@@ -543,14 +574,14 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     switch(mode) {
       case OperationMode.Manual:
         this.setManualMode();
-        this.setFlameHeight(targetTemperature);
+        await this.setFlameHeight(targetTemperature);
         break;
       case OperationMode.Eco:
-        this.setFlameHeight(targetTemperature);
+        await this.setFlameHeight(targetTemperature);
         this.setEcoMode();
         break;
       case OperationMode.Temperature:
-        this.setTemperature(targetTemperature);
+        await this.setTemperature(targetTemperature);
         break;
       case OperationMode.Off:
         await this.guardFlameOff();
