@@ -30,7 +30,7 @@ import { Logger } from 'homebridge';
  * previous all-in-memory approach lost every diagnostic the moment
  * homebridge rotated its log.
  */
-export type AttemptOutcome = 'pending' | 'success' | 'soft-fail' | 'hard-fail';
+export type AttemptOutcome = 'pending' | 'success' | 'soft-fail' | 'hard-fail' | 'aborted';
 
 export interface IgnitionAttempt {
   id: number;
@@ -104,6 +104,16 @@ export class IgnitionTracker {
   }
 
   /**
+   * Caller aborted the attempt on user request. Recorded for diagnostics but
+   * deliberately NOT counted as a failure — an abort is a user decision, not
+   * a hardware problem, so it must not trip the consecutive-failure or
+   * lockout signals.
+   */
+  recordAborted(durationMs: number, finalStatusBits: string): void {
+    this.complete('aborted', durationMs, finalStatusBits);
+  }
+
+  /**
    * Number of consecutive failures (any kind) since the last success.
    * Used by the controller to short-circuit fresh ignite requests when
    * we've already burned through MAX_ATTEMPTS.
@@ -140,7 +150,7 @@ export class IgnitionTracker {
     return this.history;
   }
 
-  private complete(outcome: 'success' | 'soft-fail' | 'hard-fail', durationMs: number, finalBits: string) {
+  private complete(outcome: 'success' | 'soft-fail' | 'hard-fail' | 'aborted', durationMs: number, finalBits: string) {
     if (!this.current) {
       return;
     }

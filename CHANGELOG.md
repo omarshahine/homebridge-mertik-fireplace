@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.2] - 2026-06-20
+
+### Fixed
+- **Fireplace could ignite *after* you turned it off, and repeated taps spawned duplicate ignition loops.** Root cause: `this.igniting` did double duty as both the live device status bit (overwritten on every status packet) and the ignition-sequence control flag. Between retry attempts the device reports `igniting:0`, which clobbered the control flag — so an Off during the inter-attempt wait failed to abort the sequence, and the re-entrancy guard failed to block a second concurrent ignite loop. Observed in the field: two loops reporting success with the same attempt id, and a burner that lit ~90s after the user pressed Off.
+  - Introduced a dedicated `igniteSequenceActive` flag that is **never** touched by status packets. It is now the single source of truth for "a sequence is running," driving both the re-entrancy guard and abort eligibility.
+  - **An Off now reliably aborts an in-progress sequence** even during the inter-attempt wait, and is signaled synchronously (`abortIgnition()`) the instant it arrives — even while another request is in flight.
+  - `waitForIgnitionOutcome()` now bails **mid-attempt** on abort instead of running the full ~90s ignition window first.
+  - On abort, the controller sends GuardFlame Off to guarantee a partially-lit burner is shut off — **"off" means off.**
+- **Retry storm eliminated.** `setMode()`'s "ignore, sequence already running" path now returns success instead of a failure that made `requestController` queue 90s retries. `requestController.sendRequest()` now refuses to run two requests concurrently (deferring the later one), which stops the duplicate ignite loops and the rogue aux toggling that fell out of the concurrency.
+
+### Notes
+- Soft-fail retries remain **in-memory only and do not resume after a Homebridge restart** — by design, so a gas burner never lights itself unattended on a reboot/crash. Lockout and attempt history still persist for diagnostics.
+
 ## [2.1.0] - 2026-05-17
 
 ### Added

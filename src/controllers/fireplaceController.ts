@@ -22,6 +22,11 @@ export interface IFireplaceController extends EventEmitter {
    * Future code can wire this to a HomeKit `StatusFault` characteristic.
    */
   isLockoutActive(): boolean;
+  /**
+   * Abort any in-progress ignition retry sequence and ensure the burner is
+   * shut off. No-op if no sequence is running.
+   */
+  abortIgnition(): void;
 }
 
 export interface IFireplaceEvents {
@@ -45,12 +50,33 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
   private client: Socket | null = null;
   private lastContact: Date = new Date();
   private lastStatus: FireplaceStatus | undefined;
+  /**
+   * Mirror of the receiver's live `igniting` status bit, refreshed on every
+   * status packet (`processStatusResponse`). This is HARDWARE STATE — it
+   * goes 0 between retry attempts while the gas line settles. Never use it
+   * to decide whether our own retry sequence is running; use
+   * `igniteSequenceActive` for that.
+   */
   private igniting = false;
   private shuttingDown = false;
   private lostConnection = false;
   /**
+   * True for the entire lifetime of an `igniteFireplace()` run — across all
+   * attempts AND the waits between them. Unlike `igniting`, this is OUR
+   * control state and is never overwritten by an incoming status packet.
+   *
+   * This is the single source of truth for "is an ignition sequence in
+   * progress": it drives the re-entrancy guard (so repeated taps can't spawn
+   * a second concurrent loop) and the abort-eligibility check (so an Off
+   * reliably cancels a sequence even during the inter-attempt wait, when the
+   * device bit reads 0). Conflating these two concerns into `igniting` was
+   * the root cause of ignites-after-off and duplicate concurrent loops.
+   */
+  private igniteSequenceActive = false;
+  /**
    * Set when a user request (typically Off) wants to interrupt the auto-retry
-   * loop. The loop polls this between attempts and bails out gracefully.
+   * loop. The loop polls this between AND during attempts and bails out
+   * gracefully, ensuring the burner is shut off afterwards.
    */
   private ignitionAbortRequested = false;
   /**
@@ -180,8 +206,8 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    * if the homebridge log rotates.
    */
   private async igniteFireplace(): Promise<boolean> {
-    if (this.igniting) {
-      this.log.debug('Ignore already igniting!');
+    if (this.igniteSequenceActive) {
+      this.log.debug('Ignore — an ignition sequence is already in progress!');
       return false;
     }
     if (this.ignitionTracker.hasRecentHardLockout()) {
@@ -193,7 +219,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       return false;
     }
     this.ignitionAbortRequested = false;
-    this.igniting = true;
+    this.igniteSequenceActive = true;
     const max = IgnitionTracker.MAX_ATTEMPTS;
     try {
       for (let attempt = 1; attempt <= max; attempt++) {
@@ -208,6 +234,15 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
         const outcome = await this.waitForIgnitionOutcome(attempt, max);
         const elapsedMs = Date.now() - startedAt;
         const bits = this.lastStatus?.statusBitsHex ?? '????';
+        if (outcome === 'aborted') {
+          this.ignitionTracker.recordAborted(elapsedMs, bits);
+          this.log.info(
+            `[ignite] Attempt ${attempt} of ${max}: aborted by user request after ` +
+            `${Math.round(elapsedMs / 1000)}s — ensuring burner is off.`,
+          );
+          await this.ensureOffAfterAbort();
+          return false;
+        }
         if (outcome === 'success') {
           this.ignitionTracker.recordSuccess(elapsedMs, bits);
           this.log.info(
@@ -249,7 +284,21 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       this.emit('lockout', true);
       return false;
     } finally {
-      this.igniting = false;
+      this.igniteSequenceActive = false;
+    }
+  }
+
+  /**
+   * After an aborted ignition sequence, make sure the burner is actually
+   * off. An attempt may have caught flame in the poll window just before the
+   * abort was observed, so we can't assume "aborted" means "never lit." This
+   * is the safety backstop behind the user's Off request.
+   */
+  private async ensureOffAfterAbort(): Promise<void> {
+    try {
+      await this.guardFlameOff();
+    } catch (err) {
+      this.log.warn(`[ignite] Post-abort shutoff failed: ${(err as Error).message}`);
     }
   }
 
@@ -263,11 +312,15 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    *  - `'hard-fail'`: `IGNITION_TIMEOUT_MS` elapsed with `igniting` still
    *    set. Receiver is locked out; only manual reset clears this.
    */
-  private async waitForIgnitionOutcome(attempt: number, max: number): Promise<'success' | 'soft-fail' | 'hard-fail'> {
+  private async waitForIgnitionOutcome(attempt: number, max: number): Promise<'success' | 'soft-fail' | 'hard-fail' | 'aborted'> {
     const start = Date.now();
     const timeoutMs = IgnitionTracker.IGNITION_TIMEOUT_MS;
     while (Date.now() - start < timeoutMs) {
+      // Bail mid-attempt the instant the user asks to stop — don't run the
+      // full ignition window before honoring an Off.
+      if (this.ignitionAbortRequested) return 'aborted';
       await this.delay(FireplaceController.IGNITE_POLL_INTERVAL_MS);
+      if (this.ignitionAbortRequested) return 'aborted';
       // Subscribe to the next status event before sending the poll, so we
       // can't race the response. Replaces a fixed 500ms wait that risked
       // reading stale `lastStatus` under slow network conditions.
@@ -544,9 +597,13 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
   async setMode(request: IRequest): Promise<boolean> {
     const mode = request.mode!;
     const currentMode = this.lastStatus?.mode || OperationMode.Off;
-    if (this.igniting) {
-      this.log.debug('Ignore as we are igniting the fireplace first!');
-      return false;
+    if (this.igniteSequenceActive) {
+      // A sequence owns the fireplace right now. Ignore this re-entrant mode
+      // change instead of spawning a second concurrent ignite loop. Return
+      // true: this is a deliberate no-op, not a failure — returning false
+      // would make requestController queue a retry storm.
+      this.log.debug('Ignore — ignition sequence already in progress!');
+      return true;
     }
     if (OperationModeUtils.needsIgnite(mode) && currentMode === OperationMode.Off && !this.lastStatus?.guardFlameOn) {
       this.log.info('Ignite fireplace');
@@ -595,12 +652,27 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     this.sendCommand(on ? '32303031030a' : '32303030030a');
   }
 
+  /**
+   * Signal that any in-progress ignition sequence should abort. Safe to call
+   * from outside `request()` (e.g. the request controller, the instant an Off
+   * arrives) so the abort is honored immediately even while another request
+   * is in flight. The sequence loop sees the flag, stops, and shuts the
+   * burner off. No-op if no sequence is running.
+   */
+  public abortIgnition(): void {
+    if (this.igniteSequenceActive && !this.ignitionAbortRequested) {
+      this.log.info('Off requested while ignition sequence is in progress — aborting and shutting off');
+      this.ignitionAbortRequested = true;
+    }
+  }
+
   async request(request: IRequest): Promise<boolean> {
     // If the auto-retry ignition loop is active, an Off request should
-    // abort the sequence rather than queueing behind it.
-    if (this.igniting && request.mode === OperationMode.Off) {
-      this.log.info('Off requested while ignition retry sequence is in progress — aborting retries');
-      this.ignitionAbortRequested = true;
+    // abort the sequence rather than queueing behind it. (Also signaled
+    // synchronously by requestController via abortIgnition() — this is the
+    // defensive second line for direct callers.)
+    if (request.mode === OperationMode.Off) {
+      this.abortIgnition();
     }
     // If a prior session ended in a hard lockout, block everything except
     // an explicit Off (which can't hurt and may help reconcile state).

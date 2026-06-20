@@ -70,6 +70,13 @@ export class RequestController implements IRequestController{
 
   setMode(mode: OperationMode) {
     this.retryCount = 0;
+    // An Off must abort an in-progress ignition sequence IMMEDIATELY, even if
+    // a request is currently in flight (the multi-minute ignite loop). Signal
+    // it synchronously here rather than waiting for this request to be
+    // dequeued — otherwise the burner can light after the user said off.
+    if (mode === OperationMode.Off) {
+      this.fireplace.abortIgnition();
+    }
     this.scheduleRequest({mode});
   }
 
@@ -94,9 +101,17 @@ export class RequestController implements IRequestController{
   }
 
   private async sendRequest(request: IRequest, retry = false) {
-    if (!this.busy) {
-      this.clearScheduledTask();
+    // Never run two requests against the fireplace concurrently. A request in
+    // flight can be a multi-minute ignition retry sequence; starting another
+    // on top of it spawns duplicate ignite loops and a retry storm (observed
+    // 2026-06-20). Defer instead — the in-flight request will finish and the
+    // rescheduled one runs then. An Off has already signaled its abort
+    // synchronously via setMode(), so deferring it here is safe.
+    if (this.busy) {
+      this.scheduleRequest(request, RequestController.DEBOUNCE_MS);
+      return;
     }
+    this.clearScheduledTask();
     if (!this.isAllowed()) {
       if (!retry) {
         setTimeout(() => this.sendRequest(request, true), RequestController.DEBOUNCE_MS);
