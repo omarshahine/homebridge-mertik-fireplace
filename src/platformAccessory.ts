@@ -27,11 +27,18 @@ export class FireplacePlatformAccessory {
   private readonly request: IRequestController;
   private readonly service: IServiceController;
   private lastStatusString: string | undefined;
+  /**
+   * Whether this fireplace has the optional aux fan kit. When false the
+   * SwingMode control is never exposed and aux is never touched. Defaults to
+   * true (exposed) unless the device config explicitly sets auxFan: false.
+   */
+  private readonly auxFanEnabled: boolean;
 
   constructor(
     private readonly platform: ValorPlatform,
     accessory: PlatformAccessory,
   ) {
+    this.auxFanEnabled = accessory.context.device?.auxFan !== false;
     this.fireplace = new FireplaceController(platform.log, accessory, platform);
     this.service = new ServiceController(platform.log, accessory, platform);
     this.request = new RequestController(
@@ -73,7 +80,9 @@ export class FireplacePlatformAccessory {
         this.updateTargetHeatingCoolerState(status);
         this.updateCurrentTemperature(status);
       }
-      this.updateSwingMode(status);
+      if (this.auxFanEnabled) {
+        this.updateSwingMode(status);
+      }
       this.updateHeatingThresholdTemperature(status);
     });
     this.fireplace.on('reachable', (reachable) => {
@@ -128,12 +137,18 @@ export class FireplacePlatformAccessory {
           : this.request.unlock(),
       );
 
-    this.service
-      .swingModeCharacteristic()
-      .onGet(() => this.swingModeValue(this.getStatus()))
-      .onSet((value) =>
-        this.request.setAux(AuxModeUtils.fromSwingMode(this.platform, value)),
-      );
+    if (this.auxFanEnabled) {
+      this.service
+        .swingModeCharacteristic()
+        .onGet(() => this.swingModeValue(this.getStatus()))
+        .onSet((value) =>
+          this.request.setAux(AuxModeUtils.fromSwingMode(this.platform, value)),
+        );
+    } else {
+      // No aux fan kit on this unit — drop the phantom SwingMode control so it
+      // doesn't appear in the Home app, and never send aux commands.
+      this.service.removeSwingMode();
+    }
 
     this.service
       .heatingThresholdTemperatureCharacteristic()

@@ -45,6 +45,12 @@
               "type": "string",
               "placeholder": "192.168.x.x",
               "description": "Static IP address of the fireplace WiFi controller"
+            },
+            "auxFan": {
+              "title": "Auxiliary Fan",
+              "type": "boolean",
+              "default": true,
+              "description": "Enable only if this fireplace has the optional aux fan kit. When disabled, the fan (SwingMode) control is hidden in HomeKit and no aux commands are sent."
             }
           },
           "required": ["name", "ip"]

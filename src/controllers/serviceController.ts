@@ -12,6 +12,7 @@ export interface IServiceController {
   lockControlsCharacteristic(): Characteristic;
   swingModeCharacteristic(): Characteristic;
   heatingThresholdTemperatureCharacteristic(): Characteristic;
+  removeSwingMode(): void;
   initCharacteristics(): void;
 }
 
@@ -144,6 +145,20 @@ export class ServiceController implements IServiceController {
 
   swingModeCharacteristic = () =>
     this.service.getCharacteristic(this.platform.Characteristic.SwingMode);
+
+  /**
+   * Remove the SwingMode (aux fan) characteristic from the service if present.
+   * Used when a fireplace is configured without the aux fan kit so HomeKit
+   * doesn't show a phantom fan control. Uses testCharacteristic to avoid
+   * lazily creating the characteristic just to delete it.
+   */
+  removeSwingMode = () => {
+    if (this.service.testCharacteristic(this.platform.Characteristic.SwingMode)) {
+      this.service.removeCharacteristic(
+        this.service.getCharacteristic(this.platform.Characteristic.SwingMode),
+      );
+    }
+  };
 
   heatingThresholdTemperatureCharacteristic = () =>
     this.service.getCharacteristic(

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.1.3] - 2026-06-20
+
+### Added
+- **`auxFan` per-fireplace config option** (default `true`). Set to `false` for units without the optional auxiliary fan kit: the SwingMode (fan) control is no longer exposed in HomeKit and the plugin never sends aux commands. Previously the fan toggle was always present even on fireplaces with no fan connected, and could be left in a stale `aux:true` state. Exposed in the Homebridge UI config schema.
+
 ## [2.1.2] - 2026-06-20
 
 ### Fixed
