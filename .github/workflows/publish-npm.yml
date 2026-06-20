@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           # Node 24 ships with npm 11.x. OIDC trusted publishing requires
           # npm >= 11.5.1 — node 22's bundled npm 10.9.x signs provenance but
