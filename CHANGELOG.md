@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.5] - 2026-06-21
+
+### Changed
+- **Declared Homebridge v2.0 compatibility.** `engines.homebridge` is now `^1.6.0 || ^2.0.0` and `engines.node` is `^20.18.0 || ^22.10.0 || ^24.0.0` (dropping EOL Node lines). The plugin was already runtime-compatible with v2 — it uses no APIs removed in HAP-NodeJS v1 (no `getValue()`, `BatteryService`, `getServiceByUUIDAndSubType()`, `updateReachability()`, `Characteristic.Units/Formats/Perms`, etc.); reachability is surfaced via a ContactSensor, and characteristic reads use the `.value` property. Verified the source compiles cleanly against the Homebridge v2.1.0 type definitions.
+- Added `skipLibCheck` to `tsconfig.json` so builds stay green against Homebridge v2, which bundles `@matter/*` type declarations that use newer TypeScript syntax.
+
 ## [2.1.4] - 2026-06-21
 
 ### Fixed

@@ -15,7 +15,12 @@
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    // Homebridge v2 bundles Matter (@matter/*) type declarations that use
+    // newer TypeScript syntax. We never reference them, but tsc parses the
+    // dependency type graph; skipping lib checks keeps builds green against
+    // both v1 and v2 of homebridge without forcing a TS upgrade.
+    "skipLibCheck": true
   },
   "include": [
     "src/"
