@@ -13,7 +13,6 @@ import {
 } from './controllers/serviceController';
 import { AuxModeUtils } from './models/auxMode';
 import { FireplaceStatus } from './models/fireplaceStatus';
-import { FlameHeight, FlameHeightUtils } from './models/flameHeight';
 import { OperationMode, OperationModeUtils } from './models/operationMode';
 import { ValorPlatform } from './platform';
 
@@ -300,30 +299,26 @@ export class FireplacePlatformAccessory {
     status: FireplaceStatus,
   ): CharacteristicValue {
     const currentRequest = this.request.currentRequest();
-    if (currentRequest?.temperature && currentRequest?.height) {
-      let operationMode = status.mode;
-      if (currentRequest?.mode) {
-        operationMode = currentRequest?.mode || OperationMode.Manual;
-      }
-      let targetTemperature = currentRequest?.temperature || 36;
-      if (operationMode === OperationMode.Manual) {
-        targetTemperature = Math.round(
-          FlameHeightUtils.toPercentage(
-            currentRequest?.height || FlameHeight.Step11,
-          ) *
-            31 +
-            5,
-        );
-      }
-      return targetTemperature;
-    }
-    let targetTemperature = status.targetTemperature;
-    if (status.mode === OperationMode.Manual) {
-      targetTemperature = Math.round(
-        FlameHeightUtils.toPercentage(this.fireplace.getFlameHeight()) * 31 + 5,
-      );
-    }
-    return targetTemperature;
+    // Prefer an explicit in-flight temperature request; otherwise report the
+    // device's real thermostat setpoint (chars 32-35), which the receiver
+    // retains even while transiently in Manual mode after ignition.
+    //
+    // We intentionally do NOT map Manual-mode flame height onto this slider.
+    // Flame height maps to a 5-36 range, but the characteristic is capped at
+    // the 80°F / 26.5°C safety max — so a high flame produced values like 33
+    // that overflowed the cap. That was the source of both the repeated
+    // "exceeded maximum of 26.5" warnings and the slider showing 80°F instead
+    // of the user's actual setpoint (e.g. 68°F) right after ignition.
+    const target = currentRequest?.temperature ?? status.targetTemperature;
+
+    // Clamp into the characteristic's advertised range so HomeKit never
+    // receives an illegal value (which it would reject with a warning and
+    // clamp anyway). Read the bounds from the characteristic so this tracks
+    // any future change to the configured cap.
+    const props = this.service.heatingThresholdTemperatureCharacteristic().props;
+    const min = props.minValue ?? 0;
+    const max = props.maxValue ?? 26.5;
+    return Math.min(max, Math.max(min, target));
   }
 
   // Format status with temperature in configured unit

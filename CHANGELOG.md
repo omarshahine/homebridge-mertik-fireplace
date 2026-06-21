@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.4] - 2026-06-21
+
+### Fixed
+- **HomeKit showed 80°F (the safety cap) instead of the real setpoint right after ignition, with repeated "Heating Threshold Temperature ... exceeded maximum of 26.5" warnings.** The fireplace lands in Manual mode for a few seconds after igniting, and `targetHeatingThresholdValue` mapped Manual-mode flame height onto the thermostat slider using a 5–36 range. Since the slider is capped at the 26.5°C / 80°F safety max, a high flame produced values like 33 that overflowed the cap — HomeKit rejected them with a warning and clamped the display to 80°F. The device's actual thermostat setpoint (e.g. 68°F) was correct the whole time; only the slider was wrong.
+  - The heating/cooling threshold now always reports the device's real thermostat setpoint, clamped to the characteristic's advertised range, and no longer maps flame height onto the slider. No more illegal-value warnings, and the slider reflects the setpoint you actually chose.
+
 ## [2.1.3] - 2026-06-20
 
 ### Added
