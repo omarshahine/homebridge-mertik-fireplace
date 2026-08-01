@@ -40,7 +40,7 @@ export class ValorPlatform implements DynamicPlatformPlugin {
     this.temperatureUnit = this.config.temperatureUnit === 'F' ? 'F' : 'C';
     this.log.debug('Finished initializing platform:', this.config.name);
     if (this.debugMode) {
-      this.log.info('Debug mode enabled - all status updates will be logged');
+      this.log.info('Debug mode enabled - every status poll will be logged while the fireplace is running');
     }
     this.log.info(`Temperature unit: ${this.temperatureUnit === 'F' ? 'Fahrenheit' : 'Celsius'}`);
 

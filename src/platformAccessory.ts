@@ -25,7 +25,7 @@ export class FireplacePlatformAccessory {
   private readonly fireplace: IFireplaceController;
   private readonly request: IRequestController;
   private readonly service: IServiceController;
-  private lastStatusString: string | undefined;
+  private lastStatusKey: string | undefined;
   /**
    * Whether this fireplace has the optional aux fan kit. When false the
    * SwingMode control is never exposed and aux is never touched. Defaults to
@@ -60,19 +60,7 @@ export class FireplacePlatformAccessory {
 
   subscribeFireplace() {
     this.fireplace.on('status', (status) => {
-      const formattedStatus = this.formatStatus(status);
-      const statusChanged = this.lastStatusString !== formattedStatus;
-
-      // Log on first status, on changes, or if debug mode is enabled
-      if (!this.lastStatusString) {
-        this.platform.log.info(`Initial status - ${formattedStatus}`);
-      } else if (statusChanged) {
-        this.platform.log.info(`Status changed - ${formattedStatus}`);
-      } else if (this.platform.debugMode) {
-        this.platform.log.info(`Status update - ${formattedStatus}`);
-      }
-
-      this.lastStatusString = formattedStatus;
+      this.logStatus(status);
       this.updateActive(status);
       if (!status.igniting && !status.shutdown) {
         this.updateCurrentHeatingCoolerState(status);
@@ -321,8 +309,46 @@ export class FireplacePlatformAccessory {
     return Math.min(max, Math.max(min, target));
   }
 
+  /**
+   * The fireplace is idle when it is off and no ignition or shutdown sequence
+   * is running. Nothing about an idle fireplace changes between polls except
+   * the room temperature, so recurring logs while idle are pure noise.
+   */
+  private isIdle(status: FireplaceStatus): boolean {
+    return (
+      status.mode === OperationMode.Off &&
+      !status.igniting &&
+      !status.shuttingDown &&
+      !status.guardFlameOn
+    );
+  }
+
+  private logStatus(status: FireplaceStatus) {
+    const formattedStatus = this.formatStatus(status);
+    const idle = this.isIdle(status);
+    // While idle, ambient temperature drift alone would emit a "Status changed"
+    // line every poll, so compare on everything but the room temperature.
+    const key = idle ? this.formatStatus(status, false) : formattedStatus;
+    const first = this.lastStatusKey === undefined;
+    const statusChanged = !first && this.lastStatusKey !== key;
+    this.lastStatusKey = key;
+
+    // Log on first status and on changes. Repeat polls are only logged at info
+    // level in debug mode, and only while the fireplace is doing something —
+    // otherwise they go to the debug channel (visible with homebridge -D).
+    if (first) {
+      this.platform.log.info(`Initial status - ${formattedStatus}`);
+    } else if (statusChanged) {
+      this.platform.log.info(`Status changed - ${formattedStatus}`);
+    } else if (this.platform.debugMode && !idle) {
+      this.platform.log.info(`Status update - ${formattedStatus}`);
+    } else {
+      this.platform.log.debug(`Status update - ${formattedStatus}`);
+    }
+  }
+
   // Format status with temperature in configured unit
-  private formatStatus(status: FireplaceStatus): string {
+  private formatStatus(status: FireplaceStatus, includeCurrent = true): string {
     const unit = this.platform.temperatureUnit;
     const current = unit === 'F'
       ? this.celsiusToFahrenheit(status.currentTemperature)
@@ -335,7 +361,7 @@ export class FireplacePlatformAccessory {
       + `ignite:${status.igniting} `
       + `target:${target}°${unit} `
       + `aux:${status.auxOn} `
-      + `current:${current}°${unit} `
+      + (includeCurrent ? `current:${current}°${unit} ` : '')
       + `shutdown:${status.shuttingDown} `
       + `guardOn:${status.guardFlameOn}`;
   }

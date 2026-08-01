@@ -64,7 +64,7 @@ Add the following to your Homebridge `config.json`:
 | Key | Required | Description |
 |-----|----------|-------------|
 | `platform` | Yes | Must be `"ValorFireplace"` |
-| `debug` | No | Enable debug mode to log all status updates (default: false) |
+| `debug` | No | Log every status poll while the fireplace is running. Idle (off) polls are never logged (default: false) |
 | `temperatureUnit` | No | Temperature unit for logs: `"C"` for Celsius, `"F"` for Fahrenheit (default: `"C"`) |
 | `fireplaces` | Yes | Array of fireplace configurations |
 | `name` | Yes | Display name for the fireplace (also used as serial number) |

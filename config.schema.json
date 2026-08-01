@@ -16,7 +16,7 @@
         "title": "Debug Mode",
         "type": "boolean",
         "default": false,
-        "description": "Enable to log all status updates. When disabled, only logs status changes."
+        "description": "Enable to log every status poll while the fireplace is running. Idle (off) polls are never logged. When disabled, only status changes are logged."
       },
       "temperatureUnit": {
         "title": "Temperature Unit",

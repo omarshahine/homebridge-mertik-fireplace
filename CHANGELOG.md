@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.6] - 2026-08-01
+
+### Fixed
+- **Log spam while the fireplace is off.** An idle fireplace emitted a status line every 15 seconds forever, which buried anything worth reading. Two causes: with `debug: true` every poll was logged at info level regardless of whether anything had changed, and ambient room-temperature drift (`current:73°F` → `74°F`) counted as a status change, so even with debug off an idle unit produced a "Status changed" line whenever the room warmed or cooled by a degree.
+  - Status logging is now gated on whether the fireplace is doing anything. A fireplace is *idle* when it is off and not igniting, not shutting down, and the guard flame is out. While idle, repeat polls no longer log at info level, and room-temperature drift alone no longer counts as a change.
+  - Transitions still log exactly as before: the first status after startup, ignition, running-state changes, and the return to off each produce one info line.
+  - With `debug: true` you still get a line per poll **while the fireplace is running** — the case that's actually useful. Idle repeats are routed to the debug channel, so they remain visible under `homebridge -D` for troubleshooting.
+
 ## [2.1.5] - 2026-06-21
 
 ### Changed
