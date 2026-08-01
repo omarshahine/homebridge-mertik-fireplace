@@ -19,8 +19,8 @@ export class RequestController implements IRequestController{
   private static RETRY_DELAY_MS = 90_000;
   private busy = false;
   private scheduledRequest?: IRequest;
-  private sendTask?: NodeJS.Timer;
-  private lockTask?: NodeJS.Timer;
+  private sendTask?: NodeJS.Timeout;
+  private lockTask?: NodeJS.Timeout;
   private retryCount = 0;
 
   constructor(
@@ -128,7 +128,10 @@ export class RequestController implements IRequestController{
     if (!success) {
       this.retryCount++;
       if (this.retryCount <= RequestController.MAX_RETRIES) {
-        this.log.info(`Retry attempt ${this.retryCount}/${RequestController.MAX_RETRIES} (waiting ${RequestController.RETRY_DELAY_MS / 1000}s)`);
+        this.log.info(
+          `Retry attempt ${this.retryCount}/${RequestController.MAX_RETRIES} `
+          + `(waiting ${RequestController.RETRY_DELAY_MS / 1000}s)`,
+        );
         this.scheduleRequest(request, RequestController.RETRY_DELAY_MS);
       } else {
         this.log.warn(`Max retries (${RequestController.MAX_RETRIES}) reached, giving up`);

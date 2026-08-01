@@ -1,5 +1,5 @@
-import { CharacteristicValue } from "homebridge";
-import { ValorPlatform } from "../platform";
+import { CharacteristicValue } from 'homebridge';
+import { ValorPlatform } from '../platform';
 
 export enum OperationMode {
   Off = 1,
@@ -23,9 +23,10 @@ export class OperationModeUtils {
   public static toHeatingCoolerState(
     platform: ValorPlatform,
     mode: OperationMode,
-    guardFlameOn: boolean
+    guardFlameOn: boolean,
   ): CharacteristicValue {
-    let state = platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+    // Every branch below assigns, including default, so no initializer is needed.
+    let state: CharacteristicValue;
     switch (mode) {
       case OperationMode.Temperature:
         state = platform.Characteristic.CurrentHeaterCoolerState.IDLE;
@@ -45,15 +46,16 @@ export class OperationModeUtils {
 
   public static toTargetHeaterCoolerState(
     platform: ValorPlatform,
-    mode: OperationMode
+    _mode: OperationMode,
   ): CharacteristicValue {
-    // All modes map to HEAT since this is a heater-only device
+    // All modes map to HEAT since this is a heater-only device. The mode is kept
+    // in the signature for symmetry with the other converters and callers.
     return platform.Characteristic.TargetHeaterCoolerState.HEAT;
   }
 
   public static ofHeaterCoolerState(
     platform: ValorPlatform,
-    value: CharacteristicValue
+    value: CharacteristicValue,
   ): OperationMode {
     // HEAT is the only supported mode - always use Temperature mode
     if (value === platform.Characteristic.TargetHeaterCoolerState.HEAT) {
@@ -67,7 +69,7 @@ export class OperationModeUtils {
     platform: ValorPlatform,
     mode: OperationMode,
     igniting: boolean,
-    shuttingDown: boolean
+    shuttingDown: boolean,
   ): CharacteristicValue {
     return mode === OperationMode.Off && (!igniting || shuttingDown)
       ? platform.Characteristic.Active.INACTIVE
@@ -77,7 +79,7 @@ export class OperationModeUtils {
   public static ofActive(
     platform: ValorPlatform,
     value: CharacteristicValue,
-    heatingCoolerStateValue: CharacteristicValue
+    heatingCoolerStateValue: CharacteristicValue,
   ): OperationMode {
     return value === platform.Characteristic.Active.ACTIVE
       ? this.ofHeaterCoolerState(platform, heatingCoolerStateValue)

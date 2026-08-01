@@ -46,7 +46,7 @@ export interface IFireplaceEvents {
 export class FireplaceController extends EventEmitter implements IFireplaceController, IFireplaceEvents {
   private readonly config: IDeviceConfig;
   private height = FlameHeight.Step11;
-  private statusTimer: NodeJS.Timer | undefined;
+  private statusTimer: NodeJS.Timeout | undefined;
   private client: Socket | null = null;
   private lastContact: Date = new Date();
   private lastStatus: FireplaceStatus | undefined;
@@ -318,9 +318,13 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     while (Date.now() - start < timeoutMs) {
       // Bail mid-attempt the instant the user asks to stop — don't run the
       // full ignition window before honoring an Off.
-      if (this.ignitionAbortRequested) return 'aborted';
+      if (this.ignitionAbortRequested) {
+        return 'aborted';
+      }
       await this.delay(FireplaceController.IGNITE_POLL_INTERVAL_MS);
-      if (this.ignitionAbortRequested) return 'aborted';
+      if (this.ignitionAbortRequested) {
+        return 'aborted';
+      }
       // Subscribe to the next status event before sending the poll, so we
       // can't race the response. Replaces a fixed 500ms wait that risked
       // reading stale `lastStatus` under slow network conditions.
@@ -331,7 +335,9 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
         this.log.debug('[ignite] Status request during ignite wait failed (will retry)');
       }
       const s = await responsePromise;
-      if (!s) continue;
+      if (!s) {
+        continue;
+      }
       if (s.guardFlameOn) {
         return 'success';
       }
@@ -358,7 +364,9 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     const step = 1000;
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      if (this.ignitionAbortRequested) return true;
+      if (this.ignitionAbortRequested) {
+        return true;
+      }
       await this.delay(Math.min(step, end - Date.now()));
     }
     return false;
@@ -465,7 +473,9 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     return new Promise((resolve) => {
       let resolved = false;
       const finish = (s: FireplaceStatus | undefined) => {
-        if (resolved) return;
+        if (resolved) {
+          return;
+        }
         resolved = true;
         clearTimeout(timer);
         this.removeListener('status', handler);

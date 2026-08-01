@@ -1,6 +1,6 @@
-import { Characteristic, Logger, PlatformAccessory, Service } from "homebridge";
-import { IDeviceConfig } from "../models/deviceConfig";
-import { ValorPlatform } from "../platform";
+import { Characteristic, Logger, PlatformAccessory, Service } from 'homebridge';
+import { IDeviceConfig } from '../models/deviceConfig';
+import { ValorPlatform } from '../platform';
 
 export interface IServiceController {
   reachableCharacteristic(): Characteristic;
@@ -24,7 +24,7 @@ export class ServiceController implements IServiceController {
   constructor(
     public readonly log: Logger,
     public readonly accessory: PlatformAccessory,
-    private readonly platform: ValorPlatform
+    private readonly platform: ValorPlatform,
   ) {
     this.config = this.accessory.context.device;
 
@@ -45,33 +45,33 @@ export class ServiceController implements IServiceController {
     const name = this.config.name;
     if (name.length < 2) {
       this.platform.log.error(
-        `The given name ${this.config.name}, is too short`
+        `The given name ${this.config.name}, is too short`,
       );
       throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.RESOURCE_DOES_NOT_EXIST
+        this.platform.api.hap.HAPStatus.RESOURCE_DOES_NOT_EXIST,
       );
     }
     this.accessory
       .getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, "Valor")
-      .setCharacteristic(this.platform.Characteristic.Model, "B6R-WME")
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Valor')
+      .setCharacteristic(this.platform.Characteristic.Model, 'B6R-WME')
       .setCharacteristic(
         this.platform.Characteristic.SerialNumber,
-        this.accessory.UUID
+        this.accessory.UUID,
       )
       .setCharacteristic(
         this.platform.Characteristic.Name,
-        this.config.name ?? "Fireplace"
+        this.config.name ?? 'Fireplace',
       );
 
     // Set the service names
     this.service.setCharacteristic(
       this.platform.Characteristic.Name,
-      this.config.name ?? "Fireplace"
+      this.config.name ?? 'Fireplace',
     );
     this.reachableService.setCharacteristic(
       this.platform.Characteristic.Name,
-      "Connected"
+      'Connected',
     );
 
     // Configure target heater cooler state to only support HEAT
@@ -112,7 +112,7 @@ export class ServiceController implements IServiceController {
 
   reachableCharacteristic = () =>
     this.reachableService.getCharacteristic(
-      this.platform.Characteristic.ContactSensorState
+      this.platform.Characteristic.ContactSensorState,
     );
 
   activeCharacteristic = () =>
@@ -120,27 +120,27 @@ export class ServiceController implements IServiceController {
 
   currentHeaterCoolerStateCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.CurrentHeaterCoolerState
+      this.platform.Characteristic.CurrentHeaterCoolerState,
     );
 
   targetHeaterCoolerStateCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.TargetHeaterCoolerState
+      this.platform.Characteristic.TargetHeaterCoolerState,
     );
 
   currentTemperatureCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.CurrentTemperature
+      this.platform.Characteristic.CurrentTemperature,
     );
 
   coolingThresholdTemperatureCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.CoolingThresholdTemperature
+      this.platform.Characteristic.CoolingThresholdTemperature,
     );
 
   lockControlsCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.LockPhysicalControls
+      this.platform.Characteristic.LockPhysicalControls,
     );
 
   swingModeCharacteristic = () =>
@@ -162,6 +162,6 @@ export class ServiceController implements IServiceController {
 
   heatingThresholdTemperatureCharacteristic = () =>
     this.service.getCharacteristic(
-      this.platform.Characteristic.HeatingThresholdTemperature
+      this.platform.Characteristic.HeatingThresholdTemperature,
     );
 }
