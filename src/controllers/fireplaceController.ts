@@ -74,6 +74,23 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    */
   private igniteSequenceActive = false;
   /**
+   * True for the duration of a `request()` command sequence. The Manual-mode
+   * watchdog stands down while it is set, because the Thermostat-mode
+   * handshake deliberately passes *through* Manual.
+   */
+  private commandInFlight = false;
+  /** True while `correctManualMode()` is running, to keep it non-reentrant. */
+  private correctingManualMode = false;
+  /**
+   * In-flight Manual-mode correction. A correction runs outside the request
+   * queue (it is triggered by a status packet, not by HomeKit), so an
+   * incoming request must await it — otherwise the two command sequences
+   * interleave on the socket and the receiver sees a scrambled handshake.
+   */
+  private pendingCorrection?: Promise<void>;
+  private manualCorrectionAttempts = 0;
+  private lastManualCorrectionAt = 0;
+  /**
    * Set when a user request (typically Off) wants to interrupt the auto-retry
    * loop. The loop polls this between AND during attempts and bails out
    * gracefully, ensuring the burner is shut off afterwards.
@@ -122,6 +139,19 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    * advertised maxValue. 26.5°C ≈ 79.7°F.
    */
   private static MAX_SAFE_TARGET_C = 26.5;
+  /**
+   * Minimum gap between Manual-mode corrections. One correction is a ~11s
+   * command handshake plus settle time, so a minute of breathing room keeps
+   * a fighting receiver from turning into a command storm.
+   */
+  private static MANUAL_CORRECTION_COOLDOWN_MS = 60_000;
+  /**
+   * How many times we try to pull the receiver back into Thermostat mode
+   * before giving up and shutting the burner off. Manual flame height burns
+   * at a fixed output regardless of room temperature — if we cannot get the
+   * fireplace onto the thermostat, the safe state is off, not lit.
+   */
+  private static MAX_MANUAL_CORRECTIONS = 3;
 
   constructor(
     public readonly log: Logger,
@@ -176,9 +206,83 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     this.shuttingDown = newStatus.shuttingDown;
     this.lastStatus = newStatus;
     this.emit('status', this.lastStatus);
+    this.enforceNoManualMode(newStatus);
     if (this.lostConnection) {
       // Make sure to turn it off, as we are not sure which state we are in.
       this.guardFlameOff();
+    }
+  }
+
+  /**
+   * Safety watchdog: the fireplace must never be left burning in Manual
+   * flame-height mode. Manual runs a fixed output and ignores the room
+   * temperature entirely, so a receiver that drifts into it (its default
+   * after ignition, or a handheld remote flame-height press) will heat the
+   * room without limit while HomeKit still shows a thermostat setpoint.
+   *
+   * Runs on every status packet. Stands down while our own command sequences
+   * are in flight, since the Thermostat-mode handshake transits Manual by
+   * design.
+   */
+  private enforceNoManualMode(status: FireplaceStatus): void {
+    if (status.mode !== OperationMode.Manual) {
+      if (status.mode === OperationMode.Temperature) {
+        this.manualCorrectionAttempts = 0;
+      }
+      return;
+    }
+    // Only a *burning* fireplace is a hazard. Ignoring/shutting-down states
+    // are transitional and resolve on their own.
+    if (!status.guardFlameOn || status.igniting || status.shuttingDown) {
+      return;
+    }
+    if (this.igniteSequenceActive || this.commandInFlight || this.correctingManualMode) {
+      return;
+    }
+    if (Date.now() - this.lastManualCorrectionAt < FireplaceController.MANUAL_CORRECTION_COOLDOWN_MS) {
+      return;
+    }
+    this.lastManualCorrectionAt = Date.now();
+    this.pendingCorrection = this.correctManualMode(status).finally(() => {
+      this.pendingCorrection = undefined;
+    });
+  }
+
+  /**
+   * Pull the receiver back onto the thermostat, or shut it off if it will not
+   * go. Preserves the receiver's retained setpoint when it has one.
+   */
+  private async correctManualMode(status: FireplaceStatus): Promise<void> {
+    this.correctingManualMode = true;
+    this.stopStatusSubscription();
+    try {
+      this.manualCorrectionAttempts++;
+      const max = FireplaceController.MAX_MANUAL_CORRECTIONS;
+      if (this.manualCorrectionAttempts > max) {
+        this.log.error(
+          `Fireplace is still in Manual flame-height mode after ${max} attempts to restore ` +
+          'Thermostat mode. Manual mode burns at a fixed output and ignores the room temperature, ' +
+          'so the fireplace is being shut off. Check whether the handheld remote is overriding the ' +
+          'receiver.',
+        );
+        this.manualCorrectionAttempts = 0;
+        await this.guardFlameOff();
+        return;
+      }
+      // Fall back to 20C (~68F) when the receiver has no retained setpoint,
+      // matching the default used elsewhere for mode changes.
+      const retained = status.targetTemperature > 0 ? status.targetTemperature : 20;
+      this.log.warn(
+        'Fireplace is running in Manual flame-height mode — restoring Thermostat mode ' +
+        `(attempt ${this.manualCorrectionAttempts}/${max}).`,
+      );
+      await this.setTemperature(retained, true);
+      await this.delay(5_000);
+    } catch (err) {
+      this.log.warn(`Manual-mode correction failed: ${(err as Error).message}`);
+    } finally {
+      this.startStatusSubscription();
+      this.correctingManualMode = false;
     }
   }
 
@@ -552,7 +656,10 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     const percentage = ((temperature) - 5) / 31;
     this.log.debug(`Set flame height to percentage: ${percentage}`);
     const height = FlameHeightUtils.ofPercentage(percentage);
-    this.log.info(`Set flame height to ${height.toString()}`);
+    // Log the step, not the raw wire code. `FlameHeight.Step6` serializes as
+    // '4335', which read like a nonsensical setpoint in the homebridge log.
+    const step = Object.keys(FlameHeight)[Object.values(FlameHeight).indexOf(height)] ?? 'unknown';
+    this.log.info(`Set flame height to ${step} (${Math.round(percentage * 100)}%)`);
     this.height = height;
     this.resetFlameHeight();
     await this.delay(10_000);
@@ -565,7 +672,29 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
     return this.height;
   }
 
-  public async setTemperature(temperature: number) {
+  /**
+   * Drive the receiver into Thermostat (Temperature) mode. The Valor
+   * handshake requires dropping to Manual, resetting flame height, then
+   * issuing the Temperature-mode command — the transient Manual step is part
+   * of the protocol, not a mode we ever rest in.
+   */
+  private async enterTemperatureMode(): Promise<void> {
+    this.setManualMode();
+    await this.delay(1_000);
+    this.resetFlameHeight();
+    await this.delay(5_000);
+    this.setTemperatureMode();
+    await this.delay(5_000);
+  }
+
+  /**
+   * @param forceMode send the mode handshake even when `lastStatus` already
+   * claims Temperature mode. Required right after ignition and during Manual-
+   * mode correction: the receiver reports a transient Temperature reading
+   * mid-ignition and then settles into Manual, so trusting that reading skips
+   * the command and strands the fireplace on a fixed flame.
+   */
+  public async setTemperature(temperature: number, forceMode = false) {
     // Defensive safety cap. The HomeKit slider is already constrained by
     // `setProps` in serviceController, but cached/restored state and
     // internal callers can still hand us higher values.
@@ -583,16 +712,11 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
 
     // Only do full mode reset if not already in temperature mode
     const currentMode = this.lastStatus?.mode;
-    if (currentMode !== OperationMode.Temperature) {
-      this.setManualMode();
-      await this.delay(1_000);
-      this.resetFlameHeight();
-      await this.delay(5_000);
-      this.setTemperatureMode();
-      await this.delay(5_000);
+    if (forceMode || currentMode !== OperationMode.Temperature) {
+      await this.enterTemperatureMode();
     }
 
-    if (this?.lastStatus?.targetTemperature !== temperature) {
+    if (forceMode || this?.lastStatus?.targetTemperature !== temperature) {
       await this.setTemperatureValue(temperature);
     }
   }
@@ -605,7 +729,14 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
   }
 
   async setMode(request: IRequest): Promise<boolean> {
-    const mode = request.mode!;
+    let mode = request.mode!;
+    // Manual flame-height mode burns at a fixed output and ignores the room
+    // temperature entirely — this plugin never puts the fireplace there. Any
+    // caller asking for Manual gets the thermostat instead.
+    if (mode === OperationMode.Manual) {
+      this.log.warn('Manual flame-height mode is not supported — using Temperature mode instead');
+      mode = OperationMode.Temperature;
+    }
     const currentMode = this.lastStatus?.mode || OperationMode.Off;
     if (this.igniteSequenceActive) {
       // A sequence owns the fireplace right now. Ignore this re-entrant mode
@@ -615,6 +746,7 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       this.log.debug('Ignore — ignition sequence already in progress!');
       return true;
     }
+    let ignited = false;
     if (OperationModeUtils.needsIgnite(mode) && currentMode === OperationMode.Off && !this.lastStatus?.guardFlameOn) {
       this.log.info('Ignite fireplace');
       const igniteSucceeded = await this.igniteFireplace();
@@ -628,27 +760,30 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       // Ignition succeeded. The receiver lands in Manual by default —
       // fall through so we still apply the user's requested mode (e.g.
       // Temperature for HEAT) instead of leaving them stuck in Manual.
+      ignited = true;
     }
     // Re-read mode: lastStatus was updated by the polls inside the ignite
     // wait loop, so currentMode (captured above) is stale post-ignite.
+    //
+    // Never take this shortcut right after an ignite. Mid-ignition the
+    // receiver briefly reports Temperature and only settles into Manual a
+    // few minutes later, so trusting that reading here skipped the mode
+    // command entirely and left the fireplace burning on a fixed flame with
+    // HomeKit still showing a thermostat setpoint (observed 2026-09-05).
     const liveMode = this.lastStatus?.mode || OperationMode.Off;
-    if (liveMode === mode) {
+    if (!ignited && liveMode === mode) {
       this.log.debug('Ignore same mode!');
       return true;
     }
     this.log.info(`Set mode to: ${OperationMode[mode]}`);
     const targetTemperature = request.temperature ?? this.lastStatus?.targetTemperature ?? 20;
     switch(mode) {
-      case OperationMode.Manual:
-        this.setManualMode();
-        await this.setFlameHeight(targetTemperature);
-        break;
       case OperationMode.Eco:
         await this.setFlameHeight(targetTemperature);
         this.setEcoMode();
         break;
       case OperationMode.Temperature:
-        await this.setTemperature(targetTemperature);
+        await this.setTemperature(targetTemperature, ignited);
         break;
       case OperationMode.Off:
         await this.guardFlameOff();
@@ -694,26 +829,38 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       );
       return false;
     }
-    let succeeds = true;
+    // Let any in-flight Manual-mode correction finish before we drive the
+    // socket ourselves.
+    if (this.pendingCorrection) {
+      await this.pendingCorrection;
+    }
+    let succeeds: boolean;
     const currentMode = this.lastStatus?.mode || OperationMode.Off;
     this.stopStatusSubscription();
+    this.commandInFlight = true;
+    try {
+      succeeds = await this.applyRequest(request, currentMode);
+    } finally {
+      this.commandInFlight = false;
+      this.startStatusSubscription();
+    }
+    return succeeds;
+  }
+
+  private async applyRequest(request: IRequest, currentMode: OperationMode): Promise<boolean> {
+    let succeeds = true;
     if (request.mode !== undefined
       && request.mode !== currentMode) {
       succeeds = await this.setMode(request);
-    } else if (request.temperature !== undefined
-      && (request.mode === OperationMode.Temperature || this.lastStatus?.mode === OperationMode.Temperature)) {
+    } else if (request.temperature !== undefined) {
+      // The HomeKit slider is always a thermostat setpoint. It used to be
+      // re-routed to setFlameHeight() whenever the receiver happened to be in
+      // Manual, which turned a "set it to 68" into a fixed-flame command and
+      // cemented Manual mode instead of escaping it.
       if (request.temperature <= 0.0) {
         await this.standBy();
       } else {
         await this.setTemperature(request.temperature);
-      }
-    } else if (request.temperature !== undefined
-       && (request.mode === OperationMode.Manual || request.mode === OperationMode.Eco
-        || this.lastStatus?.mode === OperationMode.Manual || this.lastStatus?.mode === OperationMode.Eco)) {
-      if (request.temperature <= 0.0) {
-        await this.standBy();
-      } else {
-        await this.setFlameHeight(request.temperature);
       }
     }
     await this.delay(5_000);
@@ -722,7 +869,6 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
       this.setAux(request.auxOn);
       await this.delay(5_000);
     }
-    this.startStatusSubscription();
     return succeeds;
   }
 }

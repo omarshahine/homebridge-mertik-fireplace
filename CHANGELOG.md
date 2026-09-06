@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.1.7] - 2026-09-06
+
+### Fixed
+- **The fireplace could be left burning in Manual flame-height mode while HomeKit still showed a thermostat setpoint.** Observed 2026-09-05: HomeKit HEAT ignited the fireplace, the receiver settled into Manual a few minutes later, and the Home app went on displaying "Heat, 68°F" while the burner ran at a fixed output that ignores the room temperature entirely. Three separate defects combined to produce it:
+  - `setMode()` intended to apply the requested mode after a successful ignite, but a `liveMode === mode` short-circuit immediately after defeated that. Mid-ignition the receiver transiently reports Temperature, so the check matched and the Thermostat-mode command was **never sent** — the only command the plugin issued was Ignite. The mode handshake is now always applied after an ignite, and never skipped on a transient reading.
+  - A temperature change was re-routed to `setFlameHeight()` whenever the receiver happened to be in Manual. A HomeKit slider change is always a thermostat setpoint, so this turned "set it to 68°F" into a fixed-flame command and cemented Manual mode instead of escaping it. Temperature requests now always drive the thermostat.
+  - Nothing ever reconciled the receiver's mode against what HomeKit was showing.
+
+### Added
+- **Manual-mode safety watchdog.** Manual flame height burns at a fixed output regardless of room temperature, so the plugin now refuses to leave the fireplace there. Every status packet is checked: a *burning* fireplace found in Manual is pulled back onto the thermostat (preserving its retained setpoint), up to three times, one attempt per minute. If it still will not hold — a handheld remote overriding the receiver, say — the fireplace is shut off and the reason logged at error level. The watchdog stands down while the plugin's own command sequences are running, since the Thermostat-mode handshake transits Manual by design, and a HomeKit request now queues behind an in-flight correction instead of interleaving commands on the socket.
+- A request for Manual mode from any caller is redirected to Temperature mode with a warning.
+
+### Changed
+- `Set flame height to 4335` now logs the step and percentage (`Set flame height to Step6 (48%)`). `4335` was `FlameHeight.Step6`'s raw wire code, which read like a nonsensical setpoint in the log.
+
 ## [2.1.6] - 2026-08-01
 
 ### Fixed
