@@ -226,14 +226,22 @@ export class FireplaceController extends EventEmitter implements IFireplaceContr
    */
   private enforceNoManualMode(status: FireplaceStatus): void {
     if (status.mode !== OperationMode.Manual) {
-      if (status.mode === OperationMode.Temperature) {
-        this.manualCorrectionAttempts = 0;
-      }
+      // Any non-Manual mode — including Off — is a clean slate. Carrying a
+      // stale attempt count across an off/on cycle would shut the fireplace
+      // down after fewer than MAX_MANUAL_CORRECTIONS tries.
+      this.manualCorrectionAttempts = 0;
       return;
     }
     // Only a *burning* fireplace is a hazard. Ignoring/shutting-down states
     // are transitional and resolve on their own.
     if (!status.guardFlameOn || status.igniting || status.shuttingDown) {
+      return;
+    }
+    // Pilot lit with the main burner off (standby) is not a fixed-flame
+    // hazard, and it is the state `standBy()` deliberately leaves behind.
+    // Correcting it would push the receiver onto a thermostat setpoint and
+    // light a fire the user just put out.
+    if (status.pilotOnly) {
       return;
     }
     if (this.igniteSequenceActive || this.commandInFlight || this.correctingManualMode) {
